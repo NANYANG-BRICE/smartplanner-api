@@ -1,0 +1,71 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environnements virtuels
+.env
+.venv/
+venv/
+ENV/
+env/
+*.env
+
+# Configuration de l'IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Fichiers de logs
+*.log
+
+# Système d'exploitation
+.DS_Store
+Thumbs.db
+
+# Dépendances / Build
+*.egg-info/
+dist/
+build/
+
+# Cache de pip / wheel
+pip-wheel-metadata/
+__pypackages__/
+
+# Base de données (SQLite par exemple)
+*.sqlite3
+*.db
+
+# Uvicorn / Gunicorn logs
+*.pid
+
+# Docker
+*.container
+*.log
+docker-compose.override.yml
+
+# Test coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.cache
+pytest_cache/
+.pytest_cache/
+
+# Migrations (si générées automatiquement)
+migrations/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# MyPy / Pylint / Pyright
+.mypy_cache/
+.pyre/
+.pytype/
+.dmypy.json
+.pyright/
+
+# VS Code settings
+.vscode/
