@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "🟡 Lancement des migrations Alembic..."
+alembic upgrade head
+
+echo "🟢 Démarrage du serveur FastAPI..."
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload

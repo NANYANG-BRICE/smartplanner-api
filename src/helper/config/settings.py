@@ -1,5 +1,5 @@
-from typing import List
-from pydantic import EmailStr
+from typing import List, Optional
+from pydantic import EmailStr, HttpUrl
 from pydantic_settings import BaseSettings
 from helper.utils.enums import AppEnvironment
 
@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_MINUTES: int = 1440
+    BCRYPT_COST: int = 12
 
     # === OTP Settings ===
     OTP_LENGTH: int = 6
@@ -57,6 +58,15 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "info"
     LOG_DIR: str = "logs/"
     LOG_FILE: str = "smartplanner.log"
+
+    # === External Systems ===
+    EXTERNAL_API_URL: HttpUrl  # URL du système externe (ex: https://api.external.com)
+    EXTERNAL_CLIENT_ID: str    # ID client pour OAuth 2.0
+    EXTERNAL_CLIENT_SECRET: str  # Secret client pour OAuth 2.0
+    EXTERNAL_TOKEN_URL: HttpUrl  # URL pour récupérer le token OAuth 2.0
+    EXTERNAL_AUDIENCE: Optional[str] = None  # Audience pour JWT (optionnel)
+    EXTERNAL_RATE_LIMIT_REQUESTS: int = 100  # Limite de requêtes par minute
+    EXTERNAL_TIMEOUT_SECONDS: float = 10.0  # Timeout pour les requêtes HTTP
 
     # === Méthodes utiles ===
     @property

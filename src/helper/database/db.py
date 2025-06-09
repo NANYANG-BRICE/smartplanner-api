@@ -44,3 +44,14 @@ async def init_db():
     except Exception as e:
         logger.error(f"❌ Échec de la connexion à la base de données : {str(e)}")
         raise
+    
+async def close_db():
+    """
+    Ferme proprement le moteur de connexion à la base de données.
+    À utiliser lors de l'arrêt de l'application.
+    """
+    try:
+        await engine.dispose()
+        logger.info("🔒 Connexion à la base de données fermée avec succès")
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la fermeture de la base de données : {str(e)}")

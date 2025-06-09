@@ -21,3 +21,7 @@ nest_asyncio
 jinja2
 weasyprint 
 qrcode[pil]
+asyncpg
+fastapi-limiter
+deep-translator
+googletrans==4.0.0-rc1

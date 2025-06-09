@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+
+  app:
+    build: .
+    container_name: smartschool_backend
+    command: /start
+    volumes:
+      - .:/app
+      - static_data:/app/src/static
+    ports:
+      - "7000:8000"
+    env_file:
+      - .env
+    networks:
+      - smartschool_network
+      - database_network
+      - redis_network
+
+  celery:
+    build: .
+    container_name: smartschool_celery
+    command: celery -A helper.worker.celery_app worker --loglevel=info --pool=solo
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    networks:
+      - database_network
+      - redis_network
+
+volumes:
+  static_data:
+
+networks:
+  smartschool_network:
+  database_network:
+    external: true
+    name: afrolancer_backend_database_network
+  redis_network:
+    external: true
+    name: afrolancer_backend_redis_network
