@@ -282,7 +282,7 @@ class TypeEtablissement(str, Enum):
 class SectionEnum(Enum):
     FRANCOPHONE = "Francophone"
     ANGLOPHONE = "Anglophone"
-    BILINGUE = "Bilingue"  # Si pertinent
+    BILINGUE = "Bilingue"  
 
 class CycleEnum(str, Enum):
     LICENCE = "licence"

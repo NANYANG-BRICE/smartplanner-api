@@ -17,6 +17,7 @@ from helper.security.security import create_access_token, hash_password, verify_
 from helper.services.emailing import EmailService
 from sqlalchemy.ext.asyncio import AsyncSession
 from helper.utils.enums import *
+from helper.utils.helpers import parse_safe_json, safe_json_load
 settings = Settings()
 
 
@@ -1521,7 +1522,6 @@ class SchoolService:
             if website and school.website == website:
                 raise HTTPException(status_code=400, detail="Site web déjà utilisé par une autre école")
     
-
     async def update_school_logo(self, school_id: int, logo_file: UploadFile) -> str:
         """Upload un logo pour une école spécifique et met à jour son chemin."""
         school = await self._get_or_404(SchoolModel, id=school_id)
@@ -1561,7 +1561,6 @@ class SchoolService:
         await self.db.refresh(school)
 
         return str(upload_path)
-
 
     async def create_school(self, school_create: SchoolCreate) -> School:
         """Créer une école (sans logo) à partir de données JSON valides."""
@@ -1615,7 +1614,6 @@ class SchoolService:
         # Utiliser le dict nettoyé via méthode custom
         return School(**school.to_safe_dict())
 
-
     async def get_all_schools(self, skip: int = 0, limit: int = 100) -> List[School]:
         """Récupérer toutes les écoles avec chargement optimisé des relations (et sécurité .unique())."""
         result = await self.db.execute(
@@ -1634,7 +1632,6 @@ class SchoolService:
         )
         schools = result.unique().scalars().all()
         return [School(**school.to_safe_dict()) for school in schools]
-
     
     async def update_school(
         self,
@@ -1825,15 +1822,25 @@ class SectionService:
         if not filiere:
             raise HTTPException(400, f"Filière {filiere_id} n'existe pas")
         return filiere
-
+    
     async def create_section(self, section_create: SectionCreate) -> Section:
-        """Créer une nouvelle section, en vérifiant que l'école et les filières sont valides."""
         await self._get_school_or_400(section_create.school_id)
         filieres = [await self._get_filiere_or_400(fid) for fid in section_create.filieres or []]
 
+        # Vérifier unicité
+        result = await self.db.execute(
+            select(SectionModel).filter(
+                func.lower(SectionModel.name) == section_create.name.lower(),
+                SectionModel.school_id == section_create.school_id
+            )
+        )
+        if result.scalars().first():
+            raise HTTPException(400, "Cette section existe déjà pour cette école")
+
+        # Créer la section
         db_section = SectionModel(
+            name=section_create.name.capitalize(),
             school_id=section_create.school_id,
-            name=section_create.name,
             filieres=filieres
         )
 
@@ -1841,7 +1848,34 @@ class SectionService:
             self.db.add(db_section)
             await self.db.commit()
             await self.db.refresh(db_section)
-            return Section.from_orm(db_section)
+
+            # Recharge la section avec relations préchargées
+            result = await self.db.execute(
+                select(SectionModel)
+                .options(
+                    joinedload(SectionModel.school),
+                    joinedload(SectionModel.filieres),
+                    joinedload(SectionModel.classes)
+                )
+                .filter(SectionModel.id == db_section.id)
+            )
+            db_section = result.scalars().first()
+
+            # Corriger la désérialisation du champ `school`
+            school = db_section.school
+            school_dict = school.to_safe_dict()
+            school_dict["phones"] = school.get_phones()
+            school_dict["emails"] = school.get_emails()
+
+            return Section(
+                id=db_section.id,
+                name=db_section.name,
+                school_id=db_section.school_id,
+                school=School(**school_dict),
+                filieres=[],
+                classes=[]
+            )
+
         except IntegrityError as e:
             await self.db.rollback()
             raise HTTPException(400, f"Erreur d'intégrité : {str(e)}")
@@ -1850,9 +1884,33 @@ class SectionService:
             raise HTTPException(500, str(e))
 
     async def get_section(self, section_id: int) -> Section:
-        """Récupérer une section par ID avec ses filières et classes associées."""
-        section = await self._get_section_or_404(section_id)
-        return Section.from_orm(section)
+        """Récupérer une section par ID avec ses filières, classes et école associées sans trigger lazy loading."""
+        result = await self.db.execute(
+            select(SectionModel)
+            .options(
+                joinedload(SectionModel.filieres),
+                joinedload(SectionModel.classes),
+                joinedload(SectionModel.school)
+            )
+            .filter(SectionModel.id == section_id)
+        )
+        section = result.unique().scalars().first()
+        if not section:
+            raise HTTPException(status_code=404, detail="Section non trouvée")
+
+        # Désérialisation sécurisée du modèle `School`
+        school_dict = section.school.to_safe_dict()
+        school_dict["phones"] = section.school.get_phones()
+        school_dict["emails"] = section.school.get_emails()
+
+        return Section(
+            id=section.id,
+            name=section.name,
+            school_id=section.school_id,
+            school=School(**school_dict),
+            filieres=[],  # tu peux remplir manuellement si tu veux les détails
+            classes=[]
+        )
 
     async def get_all_sections(self, skip: int = 0, limit: int = 100) -> List[Section]:
         """Récupérer toutes les sections avec pagination, en chargeant les filières et classes."""
@@ -1860,38 +1918,99 @@ class SectionService:
             select(SectionModel)
             .options(
                 joinedload(SectionModel.filieres),
-                joinedload(SectionModel.classes)
+                joinedload(SectionModel.classes),
+                joinedload(SectionModel.school)
             )
             .offset(skip)
             .limit(limit)
         )
-        sections = result.scalars().all()
-        return [Section.from_orm(s) for s in sections]
+
+        sections = result.unique().scalars().all()
+
+        # Désérialisation sécurisée
+        final_sections = []
+        for s in sections:
+            school_dict = s.school.to_safe_dict()
+            school_dict["phones"] = s.school.get_phones()
+            school_dict["emails"] = s.school.get_emails()
+
+            final_sections.append(
+                Section(
+                    id=s.id,
+                    name=s.name,
+                    school_id=s.school_id,
+                    school=School(**school_dict),
+                    filieres=[],  # tu peux peupler si besoin
+                    classes=[]
+                )
+            )
+
+        return final_sections
+
 
     async def update_section(self, section_id: int, section_update: SectionUpdate) -> Section:
-        """Mettre à jour une section existante, en vérifiant que les filières sont valides."""
+        """Mettre à jour une section existante avec vérifications et préchargement des relations."""
         section = await self._get_section_or_404(section_id)
         update_data = section_update.dict(exclude_unset=True)
 
+        # Vérifie l'unicité du nom si modifié
+        if "name" in update_data and update_data["name"].lower() != section.name.lower():
+            result = await self.db.execute(
+                select(SectionModel).filter(
+                    func.lower(SectionModel.name) == update_data["name"].lower(),
+                    SectionModel.school_id == section.school_id,
+                    SectionModel.id != section_id
+                )
+            )
+            if result.scalars().first():
+                raise HTTPException(400, "Une autre section porte déjà ce nom dans cette école")
+
+        # Met à jour les filières si présentes
         if "filieres" in update_data:
-            filieres = [await self._get_filiere_or_400(fid) for fid in update_data["filieres"]]
+            filieres = [await self._get_filiere_or_400(fid) for fid in update_data.pop("filieres")]
             section.filieres = filieres
-            del update_data["filieres"]
+
+        # Applique les autres champs
+        for key, value in update_data.items():
+            setattr(section, key, value)
 
         try:
-            for key, value in update_data.items():
-                setattr(section, key, value)
-
             await self.db.commit()
             await self.db.refresh(section)
-            return Section.from_orm(section)
+
+            # Recharge avec les relations nécessaires
+            result = await self.db.execute(
+                select(SectionModel)
+                .options(
+                    joinedload(SectionModel.school),
+                    joinedload(SectionModel.filieres),
+                    joinedload(SectionModel.classes)
+                )
+                .filter(SectionModel.id == section_id)
+            )
+            section = result.scalars().first()
+
+            school = section.school
+            school_dict = school.to_safe_dict()
+            school_dict["phones"] = school.get_phones()
+            school_dict["emails"] = school.get_emails()
+
+            return Section(
+                id=section.id,
+                name=section.name,
+                school_id=section.school_id,
+                school=School(**school_dict),
+                filieres=[],  # tu peux les désérialiser aussi si nécessaire
+                classes=[]
+            )
+
         except IntegrityError as e:
             await self.db.rollback()
             raise HTTPException(400, f"Erreur d'intégrité : {str(e)}")
         except Exception as e:
             await self.db.rollback()
             raise HTTPException(500, str(e))
-
+    
     async def delete_sections(self, section_ids: List[int]) -> List[str]:
         """Supprimer plusieurs sections, en signalant celles qui ne peuvent pas être supprimées."""
         failed_deletions = []
@@ -1919,7 +2038,6 @@ class SectionService:
         return []
 
     async def add_filieres_to_section(self, section_id: int, filiere_ids: List[int]) -> Section:
-        """Ajouter une ou plusieurs filières à une section, en vérifiant qu'elles ne sont pas déjà ajoutées."""
         section = await self._get_section_or_404(section_id)
 
         result = await self.db.execute(
@@ -1927,216 +2045,257 @@ class SectionService:
         )
         filieres = result.scalars().all()
 
-        missing_filier_ids = set(filiere_ids) - {filiere.id for filiere in filieres}
-        if missing_filier_ids:
-            raise HTTPException(status_code=404, detail=f"Filière(s) avec IDs {missing_filier_ids} non trouvée(s)")
+        missing_ids = set(filiere_ids) - {f.id for f in filieres}
+        if missing_ids:
+            raise HTTPException(404, f"Filières non trouvées : {missing_ids}")
 
-        filieres_to_add = [filiere for filiere in filieres if filiere not in section.filieres]
-        if not filieres_to_add:
-            raise HTTPException(400, "Toutes les filières fournies sont déjà assignées à cette section")
+        new_filieres = [f for f in filieres if f not in section.filieres]
+        if not new_filieres:
+            raise HTTPException(400, "Toutes les filières sont déjà associées")
 
         try:
-            section.filieres.extend(filieres_to_add)
+            section.filieres.extend(new_filieres)
             await self.db.commit()
-            await self.db.refresh(section)
-            return Section.from_orm(section)
+
+            # Recharge section avec relations jointes
+            result = await self.db.execute(
+                select(SectionModel)
+                .options(
+                    joinedload(SectionModel.school),
+                    joinedload(SectionModel.filieres),
+                    joinedload(SectionModel.classes)
+                )
+                .filter(SectionModel.id == section.id)
+            )
+            section = result.unique().scalars().first()
+
+            # Préparer l'objet school
+            school_dict = section.school.to_safe_dict()
+            school_dict["phones"] = safe_json_load(school_dict.get("phones", []))
+            school_dict["emails"] = safe_json_load(school_dict.get("emails", []))
+
+            return Section(
+                id=section.id,
+                name=section.name,
+                school_id=section.school_id,
+                school=School(**school_dict),
+                filieres=[Filiere(id=f.id, name=f.name) for f in section.filieres],
+                classes=[],
+            )
+
         except Exception as e:
             await self.db.rollback()
             raise HTTPException(500, str(e))
+    
 
-    async def remove_filieres_from_section(self, section_id: int, filiere_ids: List[int] = None, filiere_id: int = None) -> Section:
-        """Retirer une ou plusieurs filières d'une section."""
+    async def remove_filieres_from_section(
+        self,
+        section_id: int,
+        filiere_ids: List[int] = None,
+        filiere_id: int = None
+    ) -> Section:
         section = await self._get_section_or_404(section_id)
 
         if filiere_id is not None:
             filiere_ids = [filiere_id]
 
+        if not filiere_ids:
+            raise HTTPException(400, "Aucun ID de filière fourni")
+
         result = await self.db.execute(
             select(FiliereModel).filter(FiliereModel.id.in_(filiere_ids))
         )
         filieres = result.scalars().all()
 
-        missing_filier_ids = set(filiere_ids) - {filiere.id for filiere in filieres}
-        if missing_filier_ids:
-            raise HTTPException(status_code=404, detail=f"Filière(s) avec IDs {missing_filier_ids} non trouvée(s)")
+        missing_ids = set(filiere_ids) - {f.id for f in filieres}
+        if missing_ids:
+            raise HTTPException(404, f"Filières non trouvées : {missing_ids}")
 
-        filieres_to_remove = [filiere for filiere in filieres if filiere in section.filieres]
-        if not filieres_to_remove:
-            raise HTTPException(400, "Aucune des filières fournies n'est associée à cette section")
+        to_remove = [f for f in filieres if f in section.filieres]
+        if not to_remove:
+            raise HTTPException(400, "Aucune des filières n'est associée à cette section")
 
         try:
-            for filiere in filieres_to_remove:
+            for filiere in to_remove:
                 section.filieres.remove(filiere)
+
             await self.db.commit()
-            await self.db.refresh(section)
-            return Section.from_orm(section)
+
+            # Recharge avec relations pour retour propre
+            result = await self.db.execute(
+                select(SectionModel)
+                .options(
+                    joinedload(SectionModel.school),
+                    joinedload(SectionModel.filieres),
+                    joinedload(SectionModel.classes)
+                )
+                .filter(SectionModel.id == section.id)
+            )
+            section = result.unique().scalars().first()
+
+            school_dict = section.school.to_safe_dict()
+            school_dict["phones"] = parse_safe_json(school_dict.get("phones", "[]"))
+            school_dict["emails"] = parse_safe_json(school_dict.get("emails", "[]"))
+
+            return Section(
+                id=section.id,
+                name=section.name,
+                school_id=section.school_id,
+                school=School(**school_dict),
+                filieres=[Filiere(id=f.id, name=f.name) for f in section.filieres],
+                classes=[],
+            )
+
         except Exception as e:
             await self.db.rollback()
             raise HTTPException(500, str(e))
+
 
 # ============================
 # Filiere Service
 # ============================
 
 class FiliereService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
     async def _get_filiere_or_404(self, filiere_id: int) -> FiliereModel:
-        """Retrieve a filiere by ID or raise HTTP 404 if not found."""
-        filiere = self.db.query(FiliereModel).options(
-            joinedload(FiliereModel.sections),
-            joinedload(FiliereModel.specialites),
-            joinedload(FiliereModel.classes),
-            joinedload(FiliereModel.cours)
-        ).filter(FiliereModel.id == filiere_id).first()
+        result = await self.db.execute(
+            select(FiliereModel)
+            .options(
+                joinedload(FiliereModel.sections),
+                joinedload(FiliereModel.specialites),
+                joinedload(FiliereModel.classes),
+                joinedload(FiliereModel.cours)
+            )
+            .filter(FiliereModel.id == filiere_id)
+        )
+        filiere = result.unique().scalars().first()
         if not filiere:
-            raise HTTPException(404, "Filiere not found")
+            raise HTTPException(404, "Filière non trouvée")
         return filiere
 
-    async def _get_section_or_400(self, section_id: int) -> SectionModel:
-        """Retrieve a section by ID or raise HTTP 400 if not found."""
-        section = self.db.query(SectionModel).filter(SectionModel.id == section_id).first()
-        if not section:
-            raise HTTPException(400, f"Section {section_id} does not exist")
-        return section
-
     async def _check_filiere_name_unique(self, name: str, exclude_filiere_id: int = None) -> None:
-        """Check if the filiere name is unique."""
-        query = self.db.query(FiliereModel).filter(FiliereModel.name == name)
+        stmt = select(FiliereModel).filter(FiliereModel.name == name)
         if exclude_filiere_id:
-            query = query.filter(FiliereModel.id != exclude_filiere_id)
-        if query.first():
-            raise HTTPException(400, "Filiere with this name already exists")
+            stmt = stmt.filter(FiliereModel.id != exclude_filiere_id)
+        result = await self.db.execute(stmt)
+        if result.scalars().first():
+            raise HTTPException(400, "Une filière avec ce nom existe déjà")
 
     async def create_filiere(self, filiere_create: FiliereCreate) -> Filiere:
-        """Create a new filiere with validation for unique name and sections."""
-        self._check_filiere_name_unique(filiere_create.name)
-
-        sections = [self._get_section_or_400(sid) for sid in filiere_create.sections or []]
-        db_filiere = FiliereModel(name=filiere_create.name, sections=sections)
+        await self._check_filiere_name_unique(filiere_create.name)
+        db_filiere = FiliereModel(name=filiere_create.name)
 
         try:
             self.db.add(db_filiere)
-            self.db.commit()
-            self.db.refresh(db_filiere)
+            await self.db.commit()
+            await self.db.refresh(db_filiere)
+
+            # Reload avec les relations
+            result = await self.db.execute(
+                select(FiliereModel)
+                .options(
+                    joinedload(FiliereModel.sections),
+                    joinedload(FiliereModel.specialites),
+                    joinedload(FiliereModel.classes),
+                    joinedload(FiliereModel.cours)
+                )
+                .filter(FiliereModel.id == db_filiere.id)
+            )
+            db_filiere = result.unique().scalars().first()
+
             return Filiere.from_orm(db_filiere)
+
         except IntegrityError:
-            self.db.rollback()
-            raise HTTPException(400, "Filiere with this name already exists")
+            await self.db.rollback()
+            raise HTTPException(400, "Filière avec ce nom déjà existante")
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             raise HTTPException(500, str(e))
 
     async def get_filiere(self, filiere_id: int) -> Filiere:
-        """Retrieve a filiere by ID with its associated sections."""
-        return Filiere.from_orm(self._get_filiere_or_404(filiere_id))
+        filiere = await self._get_filiere_or_404(filiere_id)
+        return Filiere.from_orm(filiere)
 
     async def get_all_filieres(self, skip=0, limit=100) -> List[Filiere]:
-        """Retrieve all filieres with pagination, optimized with eager loading of relations."""
-        filieres = self.db.query(FiliereModel).options(
-            joinedload(FiliereModel.sections),
-            joinedload(FiliereModel.specialites),
-            joinedload(FiliereModel.classes),
-            joinedload(FiliereModel.cours)
-        ).offset(skip).limit(limit).all()
+        result = await self.db.execute(
+            select(FiliereModel)
+            .options(
+                joinedload(FiliereModel.sections),
+                joinedload(FiliereModel.specialites),
+                joinedload(FiliereModel.classes),
+                joinedload(FiliereModel.cours)
+            )
+            .offset(skip)
+            .limit(limit)
+        )
+        filieres = result.unique().scalars().all()
         return [Filiere.from_orm(f) for f in filieres]
 
     async def update_filiere(self, filiere_id: int, filiere_update: FiliereUpdate) -> Filiere:
-        """Update an existing filiere, ensuring name uniqueness and handling sections."""
-        filiere = self._get_filiere_or_404(filiere_id)
+        filiere = await self._get_filiere_or_404(filiere_id)
         update_data = filiere_update.dict(exclude_unset=True)
 
         if "name" in update_data:
-            self._check_filiere_name_unique(update_data["name"], exclude_filiere_id=filiere_id)
+            await self._check_filiere_name_unique(update_data["name"], exclude_filiere_id=filiere_id)
             filiere.name = update_data.pop("name")
-
-        if "sections" in update_data:
-            sections = [self._get_section_or_400(sid) for sid in update_data["sections"]]
-            filiere.sections = sections
-            del update_data["sections"]
 
         try:
             for key, value in update_data.items():
                 setattr(filiere, key, value)
 
-            self.db.commit()
-            self.db.refresh(filiere)
+            await self.db.commit()
+            await self.db.refresh(filiere)
+
+            # Reload pour sérialisation propre
+            result = await self.db.execute(
+                select(FiliereModel)
+                .options(
+                    joinedload(FiliereModel.sections),
+                    joinedload(FiliereModel.specialites),
+                    joinedload(FiliereModel.classes),
+                    joinedload(FiliereModel.cours)
+                )
+                .filter(FiliereModel.id == filiere.id)
+            )
+            filiere = result.unique().scalars().first()
+
             return Filiere.from_orm(filiere)
+
         except IntegrityError:
-            self.db.rollback()
-            raise HTTPException(400, "Invalid update data")
+            await self.db.rollback()
+            raise HTTPException(400, "Données de mise à jour invalides")
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             raise HTTPException(500, str(e))
 
     async def delete_filieres(self, filiere_ids: List[int]) -> List[str]:
-        """Delete multiple filieres, reporting which ones couldn't be deleted."""
         failed_deletions = []
 
         for filiere_id in filiere_ids:
             try:
-                filiere = self._get_filiere_or_404(filiere_id)
-                
-                # Check if the filiere has associated entities like specialites, classes, or cours
+                filiere = await self._get_filiere_or_404(filiere_id)
+
                 if filiere.specialites or filiere.classes or filiere.cours:
-                    failed_deletions.append(f"Filiere {filiere_id} could not be deleted (has associated entities).")
-                    continue  # Skip to the next filiere
-                
-                self.db.delete(filiere)
-                self.db.commit()
+                    failed_deletions.append(f"Filière {filiere_id} ne peut pas être supprimée (dépendances).")
+                    continue
+
+                await self.db.delete(filiere)
+                await self.db.commit()
             except HTTPException as e:
-                failed_deletions.append(f"Filiere {filiere_id} could not be deleted: {str(e)}")
-                continue  # Skip to the next filiere
+                failed_deletions.append(f"Filière {filiere_id} non supprimée : {str(e)}")
             except Exception as e:
-                self.db.rollback()
-                failed_deletions.append(f"Filiere {filiere_id} could not be deleted due to an error: {str(e)}")
+                await self.db.rollback()
+                failed_deletions.append(f"Erreur pour la filière {filiere_id} : {str(e)}")
 
         if failed_deletions:
-            raise HTTPException(status_code=400, detail="Some filieres could not be deleted: " + ", ".join(failed_deletions))
+            raise HTTPException(400, detail="Échecs : " + ", ".join(failed_deletions))
 
-        return []  # If all deletions succeed, return an empty list
-
-    async def add_section_to_filiere(self, filiere_id: int, section_ids: List[int]) -> Filiere:
-        """Add one or more sections to a filiere."""
-        filiere = self._get_filiere_or_404(filiere_id)
-        sections = [self._get_section_or_400(sid) for sid in section_ids]
-
-        # Validate sections are not already associated with the filiere
-        sections_to_add = [section for section in sections if section not in filiere.sections]
-        if not sections_to_add:
-            raise HTTPException(400, "All provided sections are already assigned to this filiere")
-
-        try:
-            filiere.sections.extend(sections_to_add)
-            self.db.commit()
-            self.db.refresh(filiere)
-            return Filiere.from_orm(filiere)
-        except Exception as e:
-            self.db.rollback()
-            raise HTTPException(500, str(e))
-
-    async def remove_section_from_filiere(self, filiere_id: int, section_ids: List[int]) -> Filiere:
-        """Remove one or more sections from a filiere."""
-        filiere = self._get_filiere_or_404(filiere_id)
-        sections = [self._get_section_or_400(sid) for sid in section_ids]
-
-        # Validate sections exist in the filiere
-        sections_to_remove = [section for section in sections if section in filiere.sections]
-        if not sections_to_remove:
-            raise HTTPException(400, "None of the provided sections are assigned to this filiere")
-
-        try:
-            for section in sections_to_remove:
-                filiere.sections.remove(section)
-            self.db.commit()
-            self.db.refresh(filiere)
-            return Filiere.from_orm(filiere)
-        except Exception as e:
-            self.db.rollback()
-            raise HTTPException(500, str(e))
+        return []
 
 
+    
 # ============================
 # Specialite Service
 # ============================

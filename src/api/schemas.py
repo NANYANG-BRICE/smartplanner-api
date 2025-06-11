@@ -370,11 +370,9 @@ class FiliereBase(BaseModel):
     name: str
 
 class FiliereCreate(FiliereBase):
-    sections: Optional[List[int]] = []
-
+    pass
 class FiliereUpdate(BaseModel):
     name: Optional[str]
-    sections: Optional[List[int]]
 
 class Filiere(FiliereBase):
     id: int

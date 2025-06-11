@@ -559,17 +559,6 @@ async def delete_filieres(filiere_ids: List[int], filiere_service: FiliereServic
     filiere_service.delete_filieres(filiere_ids)
     return {"message": "Filieres deleted successfully"}
 
-@filieres.post("/{filiere_id}/sections", response_model=Filiere, summary="Add sections to filiere")
-async def add_sections_to_filiere(filiere_id: int, section_ids: List[int], filiere_service: FiliereService = Depends(get_filiere_service)):
-    """Adds multiple sections to a filiere."""
-    return await filiere_service.add_section_to_filiere(filiere_id, section_ids)
-
-@filieres.delete("/{filiere_id}/sections", response_model=Filiere, summary="Remove sections from filiere")
-async def remove_sections_from_filiere(filiere_id: int, section_ids: List[int], filiere_service: FiliereService = Depends(get_filiere_service)):
-    """Removes multiple sections from a filiere."""
-    return await filiere_service.remove_section_from_filiere(filiere_id, section_ids)
-
-
 
 
 # ============================
