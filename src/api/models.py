@@ -294,14 +294,16 @@ class StudentModel(Base):
 # School Model
 # ============================
 
+
 class SchoolModel(Base):
     __tablename__ = "schools"
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False, unique=True)
     sigle = Column(String(50), unique=True, nullable=False)
     address = Column(String(255), nullable=False)
     phones = Column(Text, nullable=False)
-    emails = Column(Text, nullable=False)  # Changed to store JSON list of emails
+    emails = Column(Text, nullable=False)
     creation_date = Column(Date, nullable=False)
     establishment_type = Column(SqlEnum(TypeEtablissement), nullable=False)
     description = Column(Text, nullable=True)
@@ -310,35 +312,53 @@ class SchoolModel(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
+    # Relations
     sections = relationship("SectionModel", back_populates="school", cascade="all, delete-orphan")
     departements = relationship("DepartementModel", back_populates="school", cascade="all, delete-orphan")
-    admins = relationship("UserModel", secondary=school_admins, back_populates="admin_schools")
-    teacher_schools = relationship("UserModel", secondary=school_teachers, back_populates="teacher_schools")
+    admins = relationship("UserModel", secondary="school_admins", back_populates="admin_schools")
+    teacher_schools = relationship("UserModel", secondary="school_teachers", back_populates="teacher_schools")
     students = relationship("StudentModel", back_populates="school")
     ressources = relationship("RessourceModel", back_populates="school", cascade="all, delete-orphan")
     evenements = relationship("EvenementModel", back_populates="school", cascade="all, delete-orphan")
 
-    def set_phones(self, phones_list: List[str]) -> None:
+    def set_phones(self, phones_list):
         if not phones_list:
             raise ValueError("At least one phone number is required")
         if len(phones_list) != len(set(phones_list)):
-            raise ValueError("Duplicate phone numbers are not allowed for a single school")
+            raise ValueError("Duplicate phone numbers are not allowed")
         self.phones = json.dumps(phones_list)
 
-    def get_phones(self) -> List[str]:
+    def get_phones(self):
         return json.loads(self.phones) if self.phones else []
 
-    def set_emails(self, emails_list: List[str]) -> None:
+    def set_emails(self, emails_list):
         if not emails_list:
             raise ValueError("At least one email is required")
         if len(emails_list) != len(set(emails_list)):
-            raise ValueError("Duplicate emails are not allowed for a single school")
+            raise ValueError("Duplicate emails are not allowed")
         self.emails = json.dumps(emails_list)
 
-    def get_emails(self) -> List[str]:
+    def get_emails(self):
         return json.loads(self.emails) if self.emails else []
 
-
+    def to_safe_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "sigle": self.sigle,
+            "address": self.address,
+            "phones": self.get_phones(),
+            "emails": self.get_emails(),
+            "creation_date": self.creation_date,
+            "establishment_type": self.establishment_type.value if self.establishment_type else None,
+            "description": self.description,
+            "website": self.website,
+            "logo": self.logo,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        
+        
 # ============================
 # Section Model
 # ============================

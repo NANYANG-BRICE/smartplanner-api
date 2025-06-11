@@ -5,24 +5,6 @@ import re
 
 from helper.utils.enums import ReservationStatusEnum
 
-# ============================
-# Role Schemas
-# ============================
-
-class RoleBase(BaseModel):
-    name: str
-    description: Optional[str] = None
-
-class RoleCreate(RoleBase):
-    pass
-
-class Role(RoleBase):
-    id: int
-    permissions: List["Permission"] = []
-
-    class Config:
-        from_attributes = True
-
 
 # ============================
 # Permission Schemas
@@ -43,8 +25,28 @@ class Permission(PermissionBase):
         from_attributes = True
         
         
+        
 # ============================
-# Permission Schemas
+# Role Schemas
+# ============================
+
+class RoleBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class RoleCreate(RoleBase):
+    pass
+
+class Role(RoleBase):
+    id: int
+    permissions: List["Permission"] = []
+
+    class Config:
+        from_attributes = True
+
+
+# ============================
+# Role Schemas
 # ============================
 
 class AuthenticateUserRequest(BaseModel):
@@ -260,18 +262,20 @@ class Student(StudentBase):
 # ============================
 # School Schemas
 # ============================
-
 class SchoolBase(BaseModel):
     name: str
     sigle: str
     address: str
-    phones: List[str]
-    emails: List[EmailStr]
     creation_date: date
     establishment_type: str
     description: Optional[str] = None
-    website: HttpUrl
-    logo: str
+    website: str
+    logo: Optional[str] = None
+
+
+class SchoolCreate(SchoolBase):
+    phones: List[str]
+    emails: List[EmailStr]
 
     @validator('phones')
     def no_duplicate_phones(cls, v):
@@ -289,20 +293,16 @@ class SchoolBase(BaseModel):
             raise ValueError("At least one email is required")
         return v
 
-class SchoolCreate(SchoolBase):
-    pass
-
 class SchoolUpdate(BaseModel):
     name: Optional[str] = None
     sigle: Optional[str] = None
     address: Optional[str] = None
-    phones: Optional[List[str]] = None
-    emails: Optional[List[EmailStr]] = None
-    creation_date: Optional[date] = None
     establishment_type: Optional[str] = None
     description: Optional[str] = None
-    website: Optional[HttpUrl] = None
+    website: Optional[str] = None
     logo: Optional[str] = None
+    phones: Optional[List[str]] = None
+    emails: Optional[List[EmailStr]] = None
 
     @validator('phones')
     def no_duplicate_phones(cls, v):
@@ -322,13 +322,16 @@ class SchoolUpdate(BaseModel):
 
 class School(SchoolBase):
     id: int
+    phones: List[str]
+    emails: List[EmailStr]
+    creation_date: date
     created_at: datetime
     updated_at: Optional[datetime] = None
     sections: List["Section"] = []
-    departements: List[Departement] = []
-    admins: List[User] = []
-    teacher_schools: List[User] = []
-    students: List[Student] = []
+    departements: List["Departement"] = []
+    admins: List["User"] = []
+    teacher_schools: List["User"] = []
+    students: List["Student"] = []
     ressources: List["Ressource"] = []
     evenements: List["Evenement"] = []
 

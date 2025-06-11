@@ -135,3 +135,5 @@ Développé par l'équipe SmartPlanner — [support@smartschoolplanner.com](mail
 ## 📝 Licence
 
 MIT License
+
+taskkill /F /IM python.exe

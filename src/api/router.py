@@ -4,6 +4,7 @@ from api.models import *
 from api.schemas import *
 from api.services import *
 from typing import List
+from api.wrapper import SchoolCreateForm
 from helper.database.db import get_db
 from helper.utils.enums import (
     AppEnvironment, RoleEnum, PermissionEnum, GenderEnum,
@@ -428,10 +429,23 @@ async def delete_student(student_id: int, student_service: StudentService = Depe
 # School Routes
 # ============================
 
-@schools.post("", response_model=School, summary="Create a school")
-async def create_school(school_create: SchoolCreate, logo_file: Optional[UploadFile] = File(None), school_service: SchoolService = Depends(get_school_service)):
-    """Creates a new school with optional logo upload."""
-    return await school_service.create_school(school_create, logo_file)
+@schools.post("", response_model=School, summary="Create a school (JSON only)")
+async def create_school_json(
+    school_create: SchoolCreate,
+    school_service: SchoolService = Depends(get_school_service)
+):
+    """Creates a new school using pure JSON (logo handled separately)."""
+    return await school_service.create_school(school_create)
+
+@schools.post("/{school_id}/upload-logo", summary="Upload a new logo for a specific school")
+async def upload_school_logo(
+    school_id: int,
+    logo_file: UploadFile = File(...),
+    school_service: SchoolService = Depends(get_school_service)
+):
+    logo_path = await school_service.update_school_logo(school_id, logo_file)
+    return {"logo_path": logo_path}
+
 
 @schools.get("/{school_id}", response_model=School, summary="Get a school")
 async def get_school(school_id: int, school_service: SchoolService = Depends(get_school_service)):
@@ -444,9 +458,14 @@ async def get_all_schools(skip: int = 0, limit: int = 100, school_service: Schoo
     return await school_service.get_all_schools(skip=skip, limit=limit)
 
 @schools.put("/{school_id}", response_model=School, summary="Update a school")
-async def update_school(school_id: int, school_update: SchoolUpdate, logo_file: Optional[UploadFile] = File(None), school_service: SchoolService = Depends(get_school_service)):
-    """Updates an existing school with optional logo upload."""
-    return await school_service.update_school(school_id, school_update, logo_file)
+async def update_school(
+    school_id: int,
+    school_update: SchoolUpdate,
+    school_service: SchoolService = Depends(get_school_service)
+):
+    """Updates an existing school (logo upload disabled)."""
+    return await school_service.update_school(school_id, school_update)
+
 
 @schools.delete("/{school_id}", summary="Delete a school")
 async def delete_school(school_id: int, school_service: SchoolService = Depends(get_school_service)):

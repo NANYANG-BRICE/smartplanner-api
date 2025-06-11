@@ -4,6 +4,7 @@ from pathlib import Path
 import random
 import string
 from fastapi import File, HTTPException, UploadFile
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import and_, or_, func, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
@@ -1519,52 +1520,75 @@ class SchoolService:
                 raise HTTPException(status_code=400, detail="Un ou plusieurs numéros de téléphone sont déjà utilisés par une autre école")
             if website and school.website == website:
                 raise HTTPException(status_code=400, detail="Site web déjà utilisé par une autre école")
+    
 
-    async def _validate_logo(self, file: UploadFile) -> str:
-        """Valider et enregistrer le fichier de logo."""
-        ext = file.filename.split(".")[-1].lower()
+    async def update_school_logo(self, school_id: int, logo_file: UploadFile) -> str:
+        """Upload un logo pour une école spécifique et met à jour son chemin."""
+        school = await self._get_or_404(SchoolModel, id=school_id)
+
+        ext = logo_file.filename.split(".")[-1].lower()
         if ext not in settings.allowed_extensions_list:
-            raise HTTPException(status_code=400, detail=f"Type de fichier de logo invalide. Types autorisés : {', '.join(settings.allowed_extensions_list)}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Type de fichier de logo invalide. Types autorisés : {', '.join(settings.allowed_extensions_list)}"
+            )
 
-        file_size_mb = len(file.file.read()) / (1024 * 1024)
+        file_content = await logo_file.read()
+        file_size_mb = len(file_content) / (1024 * 1024)
         if file_size_mb > settings.MAX_UPLOAD_SIZE_MB:
-            raise HTTPException(status_code=400, detail=f"La taille du logo dépasse la limite de {settings.MAX_UPLOAD_SIZE_MB} MB")
-        file.file.seek(0)
+            raise HTTPException(
+                status_code=400,
+                detail=f"La taille du logo dépasse la limite de {settings.MAX_UPLOAD_SIZE_MB} MB"
+            )
 
-        filename = f"school_logo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file.filename.split('.')[-1]}"
+        # Supprimer l'ancien logo s'il existe
+        if school.logo:
+            try:
+                old_path = Path(school.logo)
+                if old_path.exists():
+                    old_path.unlink()
+            except Exception:
+                pass  # ignore si le fichier est déjà supprimé ou introuvable
+
+        # Enregistrer le nouveau fichier
+        filename = f"school_logo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
         upload_path = Path(settings.UPLOAD_LOGO_DIR) / filename
+        upload_path.write_bytes(file_content)
 
-        with open(upload_path, "wb") as f:
-            f.write(file.file.read())
+        # Mettre à jour dans la DB
+        school.logo = str(upload_path)
+        await self.db.commit()
+        await self.db.refresh(school)
 
         return str(upload_path)
 
-    async def create_school(self, school_create: SchoolCreate, logo_file: Optional[UploadFile] = File(None)) -> School:
-        """Créer une nouvelle école avec validation des emails, téléphones et site web uniques."""
+
+    async def create_school(self, school_create: SchoolCreate) -> School:
+        """Créer une école (sans logo) à partir de données JSON valides."""
         await self._check_unique_fields(school_create.emails, school_create.phones, school_create.website)
 
-        logo_path = None
-        if logo_file:
-            logo_path = self._validate_logo(logo_file)
-
-        db_school = SchoolModel(**school_create.dict(exclude={"phones", "emails", "logo"}))
-        db_school.set_phones(school_create.phones)
-        db_school.set_emails(school_create.emails)
-
-        if logo_path:
-            db_school.logo = logo_path
-
         try:
+            # Encode types spéciaux (HttpUrl, EmailStr, etc.)
+            data = jsonable_encoder(school_create, exclude={"phones", "emails"})
+            data["creation_date"] = school_create.creation_date
+            
+            db_school = SchoolModel(**data)
+            db_school.set_phones(school_create.phones)
+            db_school.set_emails(school_create.emails)
+
             self.db.add(db_school)
             await self.db.commit()
             await self.db.refresh(db_school)
-            return School.from_orm(db_school)
+
+            return School(**db_school.to_safe_dict())
+
         except IntegrityError as e:
             await self.db.rollback()
             if "unique constraint" in str(e).lower():
                 field = str(e).split('key ')[1].split('=')[0].strip()
                 raise HTTPException(status_code=400, detail=f"École avec ce {field} existe déjà")
             raise HTTPException(status_code=400, detail="Données fournies invalides")
+
         except Exception as e:
             await self.db.rollback()
             raise HTTPException(status_code=500, detail=str(e))
@@ -1581,60 +1605,86 @@ class SchoolService:
                 joinedload(SchoolModel.departements),
                 joinedload(SchoolModel.students),
                 joinedload(SchoolModel.ressources),
-                joinedload(SchoolModel.evenements)
+                joinedload(SchoolModel.evenements),
             )
         )
         school = result.scalars().first()
         if not school:
             raise HTTPException(status_code=404, detail="École non trouvée")
-        return School.from_orm(school)
+
+        # Utiliser le dict nettoyé via méthode custom
+        return School(**school.to_safe_dict())
+
 
     async def get_all_schools(self, skip: int = 0, limit: int = 100) -> List[School]:
-        """Récupérer toutes les écoles avec pagination, optimisé avec chargement des relations."""
+        """Récupérer toutes les écoles avec chargement optimisé des relations (et sécurité .unique())."""
         result = await self.db.execute(
             select(SchoolModel)
             .options(
                 joinedload(SchoolModel.admins),
-                joinedload(SchoolModel.teacher_schools)
+                joinedload(SchoolModel.teacher_schools),
+                joinedload(SchoolModel.sections),
+                joinedload(SchoolModel.departements),
+                joinedload(SchoolModel.students),
+                joinedload(SchoolModel.ressources),
+                joinedload(SchoolModel.evenements),
             )
             .offset(skip)
             .limit(limit)
         )
-        schools = result.scalars().all()
-        return [School.from_orm(s) for s in schools]
+        schools = result.unique().scalars().all()
+        return [School(**school.to_safe_dict()) for school in schools]
 
-    async def update_school(self, school_id: int, school_update: SchoolUpdate, logo_file: Optional[UploadFile] = File(None)) -> School:
-        """Mettre à jour une école, en gérant les emails, téléphones, contraintes uniques et le logo."""
+    
+    async def update_school(
+        self,
+        school_id: int,
+        school_update: SchoolUpdate
+    ) -> School:
+        """Met à jour une école avec gestion complète des champs complexes (sans logo upload)."""
         school = await self._get_or_404(SchoolModel, id=school_id)
         update_data = school_update.dict(exclude_unset=True)
 
-        if "emails" in update_data:
-            await self._check_unique_fields(update_data["emails"], school.get_phones(), school.website, exclude_school_id=school_id)
-            school.set_emails(update_data.pop("emails"))
-        if "phones" in update_data:
-            await self._check_unique_fields(school.get_emails(), update_data["phones"], school.website, exclude_school_id=school_id)
-            school.set_phones(update_data.pop("phones"))
-        if "website" in update_data:
-            await self._check_unique_fields(school.get_emails(), school.get_phones(), update_data["website"], exclude_school_id=school_id)
-            school.website = update_data.pop("website")
-
-        if logo_file:
-            logo_path = self._validate_logo(logo_file)
-            school.logo = logo_path
-
         try:
+            # Préparer les valeurs à valider
+            new_emails = update_data.get("emails", school.get_emails())
+            new_phones = update_data.get("phones", school.get_phones())
+            new_website = update_data.get("website", school.website)
+
+            # Vérifier unicité des champs
+            await self._check_unique_fields(
+                emails=new_emails,
+                phones=new_phones,
+                website=new_website,
+                exclude_school_id=school_id
+            )
+
+            # Appliquer les mises à jour
+            if "emails" in update_data:
+                school.set_emails(update_data.pop("emails"))
+
+            if "phones" in update_data:
+                school.set_phones(update_data.pop("phones"))
+
+            if "website" in update_data:
+                school.website = update_data.pop("website")
+
+            # Mise à jour des champs restants
             for key, value in update_data.items():
                 setattr(school, key, value)
 
             await self.db.commit()
             await self.db.refresh(school)
-            return School.from_orm(school)
+
+            return School(**school.to_safe_dict())
+
         except IntegrityError as e:
             await self.db.rollback()
             if "unique constraint" in str(e).lower():
                 field = str(e).split('key ')[1].split('=')[0].strip()
                 raise HTTPException(status_code=400, detail=f"École avec ce {field} existe déjà")
             raise HTTPException(status_code=400, detail="Données de mise à jour invalides")
+
         except Exception as e:
             await self.db.rollback()
             raise HTTPException(status_code=500, detail=str(e))
