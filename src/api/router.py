@@ -591,17 +591,6 @@ async def delete_specialites(specialite_ids: List[int], specialite_service: Spec
     specialite_service.delete_specialites(specialite_ids)
     return {"message": "Specialites deleted successfully"}
 
-@specialites.post("/{specialite_id}/cycles", response_model=Specialite, summary="Add cycles to specialite")
-async def add_cycles_to_specialite(specialite_id: int, cycle_ids: List[int], specialite_service: SpecialiteService = Depends(get_specialite_service)):
-    """Adds multiple cycles to a specialite."""
-    return await specialite_service.add_cycle_to_specialite(specialite_id, cycle_ids)
-
-@specialites.delete("/{specialite_id}/cycles", response_model=Specialite, summary="Remove cycles from specialite")
-async def remove_cycles_from_specialite(specialite_id: int, cycle_ids: List[int], specialite_service: SpecialiteService = Depends(get_specialite_service)):
-    """Removes multiple cycles from a specialite."""
-    return await specialite_service.remove_cycle_from_specialite(specialite_id, cycle_ids)
-
-
 
 
 # ============================

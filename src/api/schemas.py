@@ -394,12 +394,10 @@ class SpecialiteBase(BaseModel):
 
 class SpecialiteCreate(SpecialiteBase):
     filiere_id: int
-    cycles: Optional[List[int]] = []
 
 class SpecialiteUpdate(BaseModel):
     name: Optional[str]
     filiere_id: Optional[int]
-    cycles: Optional[List[int]]
 
 class Specialite(SpecialiteBase):
     id: int

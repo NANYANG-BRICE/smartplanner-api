@@ -2295,175 +2295,200 @@ class FiliereService:
         return []
 
 
+
     
 # ============================
 # Specialite Service
 # ============================
 
 class SpecialiteService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
     async def _get_specialite_or_404(self, specialite_id: int) -> SpecialiteModel:
-        """Retrieve a specialite by ID or raise HTTP 404 if not found, with related cycles."""
-        specialite = self.db.query(SpecialiteModel).options(
-            joinedload(SpecialiteModel.cycles)  # Load cycles relationship
-        ).filter(SpecialiteModel.id == specialite_id).first()
+        result = await self.db.execute(
+            select(SpecialiteModel).options(joinedload(SpecialiteModel.cycles)).filter(SpecialiteModel.id == specialite_id)
+        )
+        specialite = result.scalars().first()
         if not specialite:
-            raise HTTPException(404, "Specialite not found")
+            raise HTTPException(404, "Specialité non trouvée")
         return specialite
 
     async def _get_filiere_or_400(self, filiere_id: int) -> FiliereModel:
-        """Retrieve a filiere by ID or raise HTTP 400 if not found."""
-        filiere = self.db.query(FiliereModel).filter(FiliereModel.id == filiere_id).first()
+        result = await self.db.execute(select(FiliereModel).filter(FiliereModel.id == filiere_id))
+        filiere = result.scalars().first()
         if not filiere:
-            raise HTTPException(400, f"Filiere {filiere_id} does not exist")
+            raise HTTPException(400, f"Filière {filiere_id} inexistante")
         return filiere
 
-    async def _get_cycle_or_400(self, cycle_id: int) -> CycleModel:
-        """Retrieve a cycle by ID or raise HTTP 400 if not found."""
-        cycle = self.db.query(CycleModel).filter(CycleModel.id == cycle_id).first()
-        if not cycle:
-            raise HTTPException(400, f"Cycle {cycle_id} does not exist")
-        return cycle
-
     async def _check_specialite_name_unique(self, name: str, exclude_specialite_id: int = None) -> None:
-        """Check if the specialite name is unique."""
-        query = self.db.query(SpecialiteModel).filter(SpecialiteModel.name == name)
+        stmt = select(SpecialiteModel).filter(SpecialiteModel.name == name)
         if exclude_specialite_id:
-            query = query.filter(SpecialiteModel.id != exclude_specialite_id)
-        if query.first():
-            raise HTTPException(400, "Specialite with this name already exists")
+            stmt = stmt.filter(SpecialiteModel.id != exclude_specialite_id)
+        result = await self.db.execute(stmt)
+        if result.scalars().first():
+            raise HTTPException(400, "Une spécialité avec ce nom existe déjà")
 
     async def create_specialite(self, specialite_create: SpecialiteCreate) -> Specialite:
-        """Create a new specialite with validation for unique name and associated cycles."""
-        self._check_specialite_name_unique(specialite_create.name)
-
-        self._get_filiere_or_400(specialite_create.filiere_id)
-        cycles = [self._get_cycle_or_400(cid) for cid in specialite_create.cycles or []]
+        await self._check_specialite_name_unique(specialite_create.name)
+        await self._get_filiere_or_400(specialite_create.filiere_id)
 
         db_specialite = SpecialiteModel(
             filiere_id=specialite_create.filiere_id,
-            name=specialite_create.name,
-            cycles=cycles
+            name=specialite_create.name
         )
 
         try:
             self.db.add(db_specialite)
-            self.db.commit()
-            self.db.refresh(db_specialite)
-            return Specialite.from_orm(db_specialite)
+            await self.db.commit()
+            await self.db.refresh(db_specialite)
+
+            # Recharge avec la relation Filiere
+            result = await self.db.execute(
+                select(SpecialiteModel)
+                .options(joinedload(SpecialiteModel.filiere))
+                .filter(SpecialiteModel.id == db_specialite.id)
+            )
+            specialite = result.scalars().first()
+
+            return Specialite(
+                id=specialite.id,
+                name=specialite.name,
+                filiere=Filiere(id=specialite.filiere.id, name=specialite.filiere.name),
+                cycles=[],
+                classes=[],
+                cours=[],
+            )
+
         except IntegrityError:
-            self.db.rollback()
-            raise HTTPException(400, "Specialite with this name already exists")
+            await self.db.rollback()
+            raise HTTPException(400, "Spécialité avec ce nom déjà existante")
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             raise HTTPException(500, str(e))
 
-    async def get_specialite(self, specialite_id: int) -> Specialite:
-        """Retrieve a specialite by ID with its associated cycles."""
-        return Specialite.from_orm(self._get_specialite_or_404(specialite_id))
 
+
+    async def get_specialite(self, specialite_id: int) -> Specialite:
+        result = await self.db.execute(
+            select(SpecialiteModel)
+            .options(
+                joinedload(SpecialiteModel.filiere),
+                joinedload(SpecialiteModel.cycles)
+            )
+            .filter(SpecialiteModel.id == specialite_id)
+        )
+        specialite = result.scalars().first()
+        if not specialite:
+            raise HTTPException(404, "Spécialité non trouvée")
+
+        return Specialite(
+            id=specialite.id,
+            name=specialite.name,
+            filiere=Filiere(id=specialite.filiere.id, name=specialite.filiere.name),
+            cycles=[Cycle(id=c.id, name=c.name) for c in specialite.cycles],
+            classes=[],
+            cours=[],
+        )
+
+    
     async def get_all_specialites(self, skip=0, limit=100) -> List[Specialite]:
-        """Retrieve all specialites with pagination, optimized with eager loading of relations."""
-        specialites = self.db.query(SpecialiteModel).options(
-            joinedload(SpecialiteModel.cycles)
-        ).offset(skip).limit(limit).all()
-        return [Specialite.from_orm(s) for s in specialites]
+        result = await self.db.execute(
+            select(SpecialiteModel)
+            .options(joinedload(SpecialiteModel.cycles))
+            .offset(skip).limit(limit)
+        )
+        specialites = result.unique().scalars().all()
+        return [
+            Specialite(
+                id=s.id,
+                name=s.name,
+                filiere=None,
+                cycles=[Cycle(id=c.id, name=c.name) for c in s.cycles],
+                classes=[],
+                cours=[],
+            )
+            for s in specialites
+        ]
 
     async def update_specialite(self, specialite_id: int, specialite_update: SpecialiteUpdate) -> Specialite:
-        """Update an existing specialite, ensuring name uniqueness and handling cycles."""
-        specialite = self._get_specialite_or_404(specialite_id)
+        specialite = await self._get_specialite_or_404(specialite_id)
         update_data = specialite_update.dict(exclude_unset=True)
 
         if "name" in update_data:
-            self._check_specialite_name_unique(update_data["name"], exclude_specialite_id=specialite_id)
+            await self._check_specialite_name_unique(update_data["name"], exclude_specialite_id=specialite_id)
             specialite.name = update_data.pop("name")
 
-        if "cycles" in update_data:
-            cycles = [self._get_cycle_or_400(cid) for cid in update_data["cycles"]]
-            specialite.cycles = cycles
-            del update_data["cycles"]
+        if "filiere_id" in update_data:
+            await self._get_filiere_or_400(update_data["filiere_id"])
+            specialite.filiere_id = update_data.pop("filiere_id")
 
         try:
             for key, value in update_data.items():
                 setattr(specialite, key, value)
 
-            self.db.commit()
-            self.db.refresh(specialite)
-            return Specialite.from_orm(specialite)
+            await self.db.commit()
+            await self.db.refresh(specialite)
+
+            # Charger la filière associée
+            result = await self.db.execute(
+                select(FiliereModel).filter(FiliereModel.id == specialite.filiere_id)
+            )
+            filiere = result.scalars().first()
+
+            return Specialite(
+                id=specialite.id,
+                name=specialite.name,
+                filiere=Filiere(id=filiere.id, name=filiere.name) if filiere else None,
+                cycles=[],
+                classes=[],
+                cours=[],
+            )
         except IntegrityError:
-            self.db.rollback()
-            raise HTTPException(400, "Invalid update data")
+            await self.db.rollback()
+            raise HTTPException(400, "Données invalides")
         except Exception as e:
-            self.db.rollback()
+            await self.db.rollback()
             raise HTTPException(500, str(e))
 
     async def delete_specialites(self, specialite_ids: List[int]) -> List[str]:
-        """Delete multiple specialites, reporting which ones couldn't be deleted due to associated entities."""
-        failed_deletions = []
+        failed = []
 
         for specialite_id in specialite_ids:
             try:
-                specialite = self._get_specialite_or_404(specialite_id)
+                result = await self.db.execute(
+                    select(SpecialiteModel)
+                    .options(
+                        joinedload(SpecialiteModel.classes),
+                        joinedload(SpecialiteModel.cours)
+                    )
+                    .filter(SpecialiteModel.id == specialite_id)
+                )
+                specialite = result.scalars().first()
 
-                # Check if the specialite has associated entities like classes or cours
-                if specialite.classes or specialite.cours:
-                    failed_deletions.append(f"Specialite {specialite_id} could not be deleted (has associated entities).")
-                    continue  # Skip to the next specialite
-                
-                self.db.delete(specialite)
-                self.db.commit()
-            except HTTPException as e:
-                failed_deletions.append(f"Specialite {specialite_id} could not be deleted: {str(e)}")
-                continue  # Skip to the next specialite
+                if not specialite:
+                    failed.append(f"Spécialité {specialite_id} introuvable.")
+                    continue
+
+                if specialite.classes:
+                    failed.append(f"Spécialité {specialite_id} non supprimée (classes associées).")
+                    continue
+
+                if specialite.cours:
+                    failed.append(f"Spécialité {specialite_id} non supprimée (cours associés).")
+                    continue
+
+                await self.db.delete(specialite)
+                await self.db.commit()
+
             except Exception as e:
-                self.db.rollback()
-                failed_deletions.append(f"Specialite {specialite_id} could not be deleted due to an error: {str(e)}")
+                await self.db.rollback()
+                failed.append(f"Erreur pour la spécialité {specialite_id} : {str(e)}")
 
-        if failed_deletions:
-            raise HTTPException(status_code=400, detail="Some specialites could not be deleted: " + ", ".join(failed_deletions))
+        if failed:
+            raise HTTPException(status_code=400, detail="Échecs : " + ", ".join(failed))
 
-        return []  # If all deletions succeed, return an empty list
-
-    async def add_cycle_to_specialite(self, specialite_id: int, cycle_ids: List[int]) -> Specialite:
-        """Add one or more cycles to a specialite."""
-        specialite = self._get_specialite_or_404(specialite_id)
-        cycles = [self._get_cycle_or_400(cycle_id) for cycle_id in cycle_ids]
-
-        # Validate cycles are not already associated with the specialite
-        cycles_to_add = [cycle for cycle in cycles if cycle not in specialite.cycles]
-        if not cycles_to_add:
-            raise HTTPException(400, "All provided cycles are already assigned to this specialite")
-
-        try:
-            specialite.cycles.extend(cycles_to_add)
-            self.db.commit()
-            self.db.refresh(specialite)
-            return Specialite.from_orm(specialite)
-        except Exception as e:
-            self.db.rollback()
-            raise HTTPException(500, str(e))
-
-    async def remove_cycle_from_specialite(self, specialite_id: int, cycle_ids: List[int]) -> Specialite:
-        """Remove one or more cycles from a specialite."""
-        specialite = self._get_specialite_or_404(specialite_id)
-        cycles = [self._get_cycle_or_400(cycle_id) for cycle_id in cycle_ids]
-
-        # Validate cycles exist in the specialite
-        cycles_to_remove = [cycle for cycle in cycles if cycle in specialite.cycles]
-        if not cycles_to_remove:
-            raise HTTPException(400, "None of the provided cycles are assigned to this specialite")
-
-        try:
-            for cycle in cycles_to_remove:
-                specialite.cycles.remove(cycle)
-            self.db.commit()
-            self.db.refresh(specialite)
-            return Specialite.from_orm(specialite)
-        except Exception as e:
-            self.db.rollback()
-            raise HTTPException(500, str(e))
+        return []
 
 
 # ============================
